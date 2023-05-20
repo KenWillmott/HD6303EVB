@@ -6,6 +6,7 @@
 
 * 2023-03-01 adapt for 6303Y
 * 2023-05-18 first clean up, add some comments
+* 2023-05-20 add feedback text, write "W", quit command "Q"
 
 * based on the original source
 * COPYWRITE 1973, MOTOROLA INC
@@ -27,11 +28,31 @@ TDRE   EQU   $20 transmit data register empty flag
 RDR    EQU   $12 rx data register (0)
 TDR    EQU   $13 tx data register (undefined)
 
+* Address of standard boot
+
+QEXIT  EQU $8000
 
 * start of boot ROM area
 * EEPROM is actually $E000-$FFFF
 
-       ORG    $FE00
+       ORG    $FD00
+
+* ENTER POWER ON SEQUENCE
+START  EQU    *
+
+* set rate and mode
+       LDAA  #CC0 	asynch, E/16 baud
+       STAA  RMCR
+
+* initialize SCI
+       LDAA  #SCREN+SCTEN     enable RX TX
+       STAA  TRCSR1
+
+* run main program
+       JMP   KBUG
+
+* Utility routines follow
+*
 
 * INPUT ONE CHAR INTO A-REGISTER
 GETCH  LDAA  TRCSR1
@@ -45,10 +66,43 @@ GETCH  LDAA  TRCSR1
 
 * Input a character with output echo
 * implemented as an entry point to OUTCH
-INCH   BSR    GETCH
-       JMP    OUTCH    ECHO CHAR
+
+INCH   BSR   GETCH
+       CMPA  #$0D
+       BEQ   NOECHO
+
+* OUTPUT ONE CHAR in Accumulator A
+*
+
+OUTCH  PSHB           SAVE B-REG
+OUTC1  LDAB  TRCSR1
+       ANDB  #TDRE
+       BEQ    OUTC1    XMIT NOT READY
+
+       STAA  TDR   OUTPUT CHARACTER
+       PULB
+NOECHO RTS
+
+* Output a char string
+* address of string in X
+
+PRSTRN LDAA ,X  Get a char
+       BEQ PRDONE
+       BSR OUTCH
+       INX
+       BRA PRSTRN
+PRDONE RTS
+
+*
+* end utility routines
+
+
+* Monitor code begins
+*
 
 * INPUT HEX CHAR
+*
+
 INHEX  BSR    INCH
        CMPA  #'0
        BMI    C1       NOT HEX
@@ -60,6 +114,9 @@ INHEX  BSR    INCH
        BGT    C1       NOT HEX
        SUBA  #'A-'9-1    MAKE VALUES CONTIGUOUS
 IN1HG  RTS
+
+* S-record loader
+*
 
 LOAD  BSR    INCH
        CMPA  #'S
@@ -73,8 +130,10 @@ LOAD  BSR    INCH
        BSR    BYTE     READ BYTE
        SUBA  #2
        STAA  BYTECT   BYTE COUNT
+
 * BUILD ADDRESS
        BSR    BADDR
+
 * STORE DATA
 LOAD11 BSR    BYTE
        DEC    BYTECT
@@ -90,6 +149,8 @@ LOAD19 LDAA  #'?      PRINT QUESTION MARK
 C1     JMP    CONTRL
 
 * BUILD ADDRESS
+*
+
 BADDR  BSR    BYTE     READ 2 FRAMES
        STAA XHI
        BSR    BYTE
@@ -98,6 +159,8 @@ BADDR  BSR    BYTE     READ 2 FRAMES
        RTS
 
 * INPUT BYTE (TWO FRAMES)
+*
+
 BYTE   BSR    INHEX    GET HEX CHAR
        ASLA
        ASLA
@@ -113,6 +176,8 @@ BYTE   BSR    INHEX    GET HEX CHAR
        RTS
 
 * CHANGE MEMORY (M AAAA DD NN)
+*
+
 CHANGE BSR    BADDR    BUILD ADDRESS
        BSR    OUTS     PRINT SPACE
        BSR    OUT2HS
@@ -123,6 +188,18 @@ CHANGE BSR    BADDR    BUILD ADDRESS
        BNE    LOAD19   MEMORY DID NOT CHANGE
        BRA    CONTRL
 
+* WRITE MEMORY (M AAAA NN)
+*
+
+MWRITE BSR    BADDR    BUILD ADDRESS
+       BSR    OUTS     PRINT SPACE
+       BSR    BYTE
+       STAA ,X
+       BRA    CONTRL
+
+*  formatted output entry points
+*
+
 OUTHL  LSRA           OUT HEX LEFT BCD DIGIT
        LSRA
        LSRA
@@ -131,18 +208,11 @@ OUTHL  LSRA           OUT HEX LEFT BCD DIGIT
 OUTHR  ANDA  #$F      OUT HEX RIGHT BCD DIGIT
        ADDA  #$30
        CMPA  #$39
-       BLS    OUTCH
-       ADDA  #$7
+       BHI   ISALF
+       JMP    OUTCH
 
-* OUTPUT ONE CHAR
-OUTCH  PSHB           SAVE B-REG
-OUTC1  LDAB  TRCSR1
-       ANDB  #TDRE
-       BEQ    OUTC1    XMIT NOT READY
-
-       STAA  TDR   OUTPUT CHARACTER
-       PULB
-       RTS
+ISALF  ADDA  #$7
+       JMP    OUTCH
 
 OUT2H  LDAA  0,X      OUTPUT 2 HEX CHAR
        BSR    OUTHL    OUT LEFT HEX CHAR
@@ -153,47 +223,70 @@ OUT2H  LDAA  0,X      OUTPUT 2 HEX CHAR
 
 OUT2HS BSR    OUT2H    OUTPUT 2 HEX CHAR + SPACE
 OUTS   LDAA  #$20     SPACE
-       BRA    OUTCH    (BSR & RTS)
+       JMP    OUTCH    (BSR & RTS)
 
+* Monitor startup
+*
+
+KBUG   LDX   #MOTD   Print start up message
+       JSR   PRSTRN
+       BRA   CONTRL
      
 * PRINT CONTENTS OF STACK
-PRINT  TSX
+PRINT  LDX   #REGHDR   Print register titles
+       JSR   PRSTRN
+       TSX
        STX    SP       SAVE STACK POINTER
        LDAB  #9
 PRINT2 BSR    OUT2HS   OUT 2 HEX & SPCACE
        DECB
        BNE    PRINT2
 
-* ENTER POWER ON SEQUENCE
-START  EQU    *
-
-* set rate and mode
-       LDAA  #CC0 	asynch, E/16 baud
-       STAA  RMCR
-
-* initialize SCI
-       LDAA  #SCREN+SCTEN     enable RX TX
-       STAA  TRCSR1
-
 CONTRL LDS    #STACK   SET STACK POINTER
        LDAA  #$D      CARRIAGE RETURN
-       BSR    OUTCH
+       JSR    OUTCH
        LDAA  #$A      LINE FEED
-       BSR    OUTCH
+       JSR    OUTCH
+       LDX   #PROMPT   Print start up message
+       JSR   PRSTRN
 
        JSR    INCH     READ CHARACTER
        TAB
-       BSR    OUTS     PRINT SPACE
-       CMPB  #'L
-       BNE    *+5
+       JSR    OUTS     PRINT SPACE
+
+       CMPB  #'Q		Quit to stored program
+       BNE    NOTQ
+       JMP    QEXIT
+
+NOTQ   CMPB  #'L		Load S-record
+       BNE    NOTL
        JMP    LOAD
-       CMPB  #'M
-       BEQ    CHANGE
-       CMPB  #'P
-       BEQ    PRINT    STACK
-       CMPB  #'G
+
+NOTL   CMPB  #'M		Modify
+       BNE    NOTM
+       JMP    CHANGE
+
+NOTM   CMPB  #'W		Write
+       BEQ    MWRITE
+       CMPB  #'P		Print
+       BEQ    PRINT
+       CMPB  #'G		Go
        BNE    CONTRL
        RTI             GO
+
+* Constant data section
+
+MOTD   FCC "Kbug 1.00 for HD6303Y"
+       FCB $0D,$0A
+       FCC "G(o),L(oad),P(rocessor),M(odify),W(rite),Q(uit)?:"
+       FCB 0
+
+PROMPT FCC "KBUG->"
+       FCB 0
+
+REGHDR FCB $0D,$0A
+       FCC "CC B  A  XH XL PH PL SH SL"
+       FCB $0D,$0A,0
 
 * Initialize processor reset vector
        ORG    $FFFE
@@ -220,4 +313,5 @@ CKSM   RMB    1        CHECKSUM
 BYTECT RMB    1        BYTE COUNT
 XHI    RMB    1        XREG HIGH
 XLOW   RMB    1        XREG LOW
+
        END
