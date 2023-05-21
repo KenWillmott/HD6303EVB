@@ -8,3 +8,5 @@ The historical background is that Hitachi obtained a licence from Motorola to pr
 The board consists of a 64 pin DIP HD63C03YP MCU, an 8k EEPROM, an external bus interface, I/O pins, and 64k SRAM. It can be interfaced from the on board serial port, running at 115200 baud and some slower baud rates. More hardware details can be found in the Wiki.
 
 The project is in the extreme beta stage, at the moment one working board exists, works, and is undergoing full testing. Some peripheral boards to plug into the expansion bus connectors, are in development. The first and current board is designated V1.0.
+
+The provided ROM monitor program Kbug6303, can be written to the 8k EEPROM. Once it is installed, it is possible to perform firmware updates in place, by changing the write protect jumper on the board, and running software to copy the code from RAM to the EEPROM.
