@@ -8,6 +8,8 @@
 * 2023-05-18 first clean up, add some comments
 * 2023-05-20 add feedback text, write "W", exec command "X"
 * 2023-05-21 fixed stack initialization error
+* 2023-05-22 add CPU vector jump table
+* 2023-05-25 add primitive RAM test
 
 * based on the original source
 * COPYWRITE 1973, MOTOROLA INC
@@ -31,7 +33,13 @@ TDR    EQU   $13 tx data register (undefined)
 
 * Address of boot or test code, RTS to return to monitor
 
-XCALL  EQU $8000
+XCALL			EQU	$B800		call test code here
+
+INTRAM		equ	$40
+EXTRAM		EQU    $0140
+ramst			equ	EXTRAM	external ram
+ramend		equ	$C000		memory limit
+
 
 * start of boot ROM area
 * EEPROM is actually $E000-$FFFF
@@ -48,6 +56,20 @@ START  EQU    *
 * initialize SCI
        LDAA  #SCREN+SCTEN     enable RX TX
        STAA  TRCSR1
+
+* set up vector jump table
+
+		LDS	#EXTRAM-1   SET STACK POINTER
+		LDAB	#10
+		LDAA	#$7E		JMP INSTRUCTION
+		LDX	#VECERR
+
+NEXTVC	PSHX
+		PSHA
+		DECB
+		BNE	NEXTVC
+
+		LDS    #STACK   SET STACK POINTER
 
 * run main program
        JMP   KBUG
@@ -93,6 +115,35 @@ PRSTRN LDAA ,X  Get a char
        INX
        BRA PRSTRN
 PRDONE RTS
+
+* Report vector problem
+
+VECERR LDX	#ERROUT
+       JSR PRSTRN
+FREEZE BRA FREEZE     Suspend via endless loop
+
+* boot time memory test
+
+MEMTST	ldx	#ramst
+		stx	memtop
+
+loop		ldaa	0,x	get byte
+		tab		save it
+		coma
+		staa	0,x	save complement same place
+		cmpa	0,x
+		bne	done	read not same as written
+		stab	0,x	restore byte
+
+		inx		look at next byte
+		cpx	#ramend
+		beq	done
+		bra	loop
+
+done		stx	memtop
+
+		rts
+
 
 *
 * end utility routines
@@ -146,7 +197,8 @@ LOAD11 BSR    BYTE
 LOAD15 INC    CKSM
        BEQ    LOAD
 LOAD19 LDAA  #'?      PRINT QUESTION MARK
-       BSR    OUTCH
+
+       JSR    OUTCH
 C1     JMP    CONTRL
 
 * BUILD ADDRESS
@@ -229,11 +281,24 @@ OUTS   LDAA  #$20     SPACE
 * Monitor startup
 *
 
-KBUG   LDS    #STACK   SET STACK POINTER
+KBUG		jsr	MEMTST	check memory
 
-       LDX   #MOTD   Print start up message
-       JSR   PRSTRN
-       BRA   CONTRL
+		LDX   #MOTD		Print start up message
+		JSR   PRSTRN
+
+		ldx	#MMSG1	Print memtest results
+		jsr	PRSTRN
+		ldx	#memtop
+		jsr	OUT2H
+		jsr	OUT2H		
+		ldx	#MMSG2
+		jsr	PRSTRN
+
+		LDX   #cmdhlp   Print commands message
+		JSR   PRSTRN
+
+		BRA   CONTRL
+
      
 * PRINT CONTENTS OF STACK
 PRINT  LDX   #REGHDR   Print register titles
@@ -271,8 +336,10 @@ NOTL   CMPB  #'M		Modify
        JMP    CHANGE
 
 NOTM   CMPB  #'W		Write
-       BEQ    MWRITE
-       CMPB  #'P		Print
+		BNE NOTW
+       JMP    MWRITE
+
+NOTW   CMPB  #'P		Print
        BEQ    PRINT
        CMPB  #'G		Go
        BNE    CONTRL
@@ -280,10 +347,12 @@ NOTM   CMPB  #'W		Write
 
 * Constant data section
 
-MOTD   FCC "Kbug 1.00 for HD6303Y"
-       FCB $0D,$0A
-       FCC "G(o),L(oad),P(rocessor),M(odify),W(rite),X(ecute)?:"
-       FCB 0
+MOTD		FCB $0D,$0A
+		FCC "*** Kbug 1.00 for HD6303Y EVB 1.0 ***"
+		FCB $0D,$0A,0
+
+cmdhlp	FCC "G(o),L(oad),P(roc),M(od),W(rite),X(ecute)?:"
+       	FCB $0D,$0A,0
 
 PROMPT FCC "KBUG->"
        FCB 0
@@ -292,14 +361,41 @@ REGHDR FCB $0D,$0A
        FCC "CC B  A  XH XL PH PL SH SL"
        FCB $0D,$0A,0
 
-* Initialize processor reset vector
-       ORG    $FFFE
-       FDB    START
+ERROUT FCB $0D,$0A
+       FCC "Err - vector table entry no init"
+       FCB $0D,$0A,0
+
+MMSG1		FCC "RAM test passed to "
+		FCB 0
+
+MMSG2		FCC "."
+		FCB $0D,$0A,0
+
+* Processor hardware vectors
+* There are ten, not including CPU Reset
+
+       ORG    $FFEA
+
+IRQ2   FDB    VIRQ2
+CMI    FDB    VCMI
+TRAP   FDB    VTRAP
+SIO    FDB    VSIO
+TOI    FDB    VTOI
+OCI    FDB    VOCI
+ICI    FDB    VICI
+IRQ1   FDB    VIRQ1
+SWI    FDB    VSWI
+NMI    FDB    VNMI
+RES    FDB    START
 
 * Data Section
 * located in internal RAM
 
-       ORG    $100
+		org	INTRAM
+
+memtop	rmb	2
+
+       ORG    EXTRAM-44
 
 STACK  RMB    1        STACK POINTER
 * REGISTERS FOR GO
@@ -317,5 +413,20 @@ CKSM   RMB    1        CHECKSUM
 BYTECT RMB    1        BYTE COUNT
 XHI    RMB    1        XREG HIGH
 XLOW   RMB    1        XREG LOW
+
+* CPU vector jump table
+
+VIRQ2   RMB	 3
+VCMI    RMB	 3
+VTRAP   RMB	 3
+VSIO    RMB	 3
+VTOI    RMB	 3
+VOCI    RMB	 3
+VICI    RMB	 3
+VIRQ1   RMB	 3
+VSWI    RMB	 3
+VNMI    RMB	 3
+
+HERE EQU *
 
        END
