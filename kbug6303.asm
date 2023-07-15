@@ -1,4 +1,6 @@
-* KBUG
+* KBUG V 1.03
+* Monitor program for the HD6303Y EVB board
+
 * K. Willmott 2023
 * tested, working
 
@@ -10,6 +12,10 @@
 * 2023-05-21 fixed stack initialization error
 * 2023-05-22 add CPU vector jump table
 * 2023-05-25 add primitive RAM test
+* 2023-06-18 add external baud clock for 3MHz operation
+* 2023-06-19 make alpha input case insensitive
+* 2023-06-22 add clock stretching
+* 2023=07-14 code formatting clean up
 
 * based on the original source
 * COPYWRITE 1973, MOTOROLA INC
@@ -17,134 +23,167 @@
 
 * HD6303Y register definitions (<power on default value>):
 
-RMCR   EQU   $10 rate mode control register ($c0)
-CC0    EQU   $04 set for asynch mode
+RMCR	equ	$10 rate mode control register ($c0)
+CC0	equ	$04 set for asynch mode
+CC1	equ	$08 set for ext clock
+RP5CR	equ	$14
+AMRE	equ	$10
+MRE	equ	$04
 
-TRCSR1 EQU   $11 control status register 1 ($20)
-TRCSR2 EQU   $1e control status register 2 ($28)
-SCREN  EQU   $08 RE bit - RX enable
-SCTEN  EQU   $02 TE bit - TX enable
+TRCSR1	equ	$11 control status register 1 ($20)
+TRCSR2	equ	$1e control status register 2 ($28)
+SCREN	equ	$08 RE bit - RX enable
+SCTEN	equ	$02 TE bit - TX enable
 
-RDRF   EQU   $80 receive data register full flag
-TDRE   EQU   $20 transmit data register empty flag
+RDRF	equ	$80 receive data register full flag
+TDRE	equ	$20 transmit data register empty flag
 
-RDR    EQU   $12 rx data register (0)
-TDR    EQU   $13 tx data register (undefined)
+RDR	equ	$12 rx data register (0)
+TDR	equ	$13 tx data register (undefined)
 
 * Address of boot or test code, RTS to return to monitor
 
-XCALL			EQU	$B800		call test code here
+XCALL	equ	$B800		call test code here
 
-INTRAM		equ	$40
-EXTRAM		EQU    $0140
-ramst			equ	EXTRAM	external ram
-ramend		equ	$C000		memory limit
+* HD8303 internal RAM
+
+INTRAM	equ	$40
+EXTRAM	equ	$0140
+
+* memory test variables
+
+ramst	equ	EXTRAM	external ram
+ramend	equ	$C000		memory limit
 
 
 * start of boot ROM area
 * EEPROM is actually $E000-$FFFF
 
-       ORG    $FD00
+	ORG	$FD00
 
 * ENTER POWER ON SEQUENCE
-START  EQU    *
+
+START	equ	*
 
 * set rate and mode
-       LDAA  #CC0 	asynch, E/16 baud
-       STAA  RMCR
+
+* choose one line for external vs. internal baud clock:
+
+*	ldaa  #CC0+CC1 	asynch, E/16 baud, ext clock
+	ldaa	#CC0	asynch, E/16 baud, internal clock
+
+	staa	RMCR
 
 * initialize SCI
-       LDAA  #SCREN+SCTEN     enable RX TX
-       STAA  TRCSR1
+
+	ldaa	#SCREN+SCTEN     enable RX TX
+	staa	TRCSR1
+
+* uncomment to configure MR pin
+* auto memory ready from MR input P52
+
+*	ldaa	RP5CR
+*	oraa	#MRE+AMRE
+*	staa	RP5CR
 
 * set up vector jump table
 
-		LDS	#EXTRAM-1   SET STACK POINTER
-		LDAB	#10
-		LDAA	#$7E		JMP INSTRUCTION
-		LDX	#VECERR
+	lds	#EXTRAM-1   SET STACK POINTER
+	ldab	#10
+	ldaa	#$7E		JMP INSTRUCTION
+	ldx	#VECERR
 
-NEXTVC	PSHX
-		PSHA
-		DECB
-		BNE	NEXTVC
+NEXTVC	pshx
+	psha
+	decb
+	bne	NEXTVC
 
-		LDS    #STACK   SET STACK POINTER
+	lds	#STACK   SET STACK POINTER
 
 * run main program
-       JMP   KBUG
+
+	jmp	KBUG
 
 * Utility routines follow
 *
 
 * INPUT ONE CHAR INTO A-REGISTER
-GETCH  LDAA  TRCSR1
-       ANDA  #RDRF
-       BEQ    GETCH     RECEIVE NOT READY
+GETCH	ldaa	TRCSR1
+	anda	#RDRF
+	beq	GETCH     RECEIVE NOT READY
 
-       LDAA  RDR   INPUT CHARACTER
-       CMPA  #$7F
-       BEQ    GETCH     RUBOUT; IGNORE
-       RTS
+	ldaa	RDR   INPUT CHARACTER
+	cmpa	#$7F
+	beq	GETCH     RUBOUT; IGNORE
+	rts
+
+* Make input case insensitive
+* From p.718 Hitachi HD6301-3 Handbook
+
+TPR	equ	*	Entry point
+	cmpa	#'a
+	bcs	TPR1
+	cmpa	#'z
+	bhi	TPR1
+	anda	#$DF	Convert lowercase to uppercase
+TPR1	rts
 
 * Input a character with output echo
 * implemented as an entry point to OUTCH
 
-INCH   BSR   GETCH
-       CMPA  #$0D
-       BEQ   NOECHO
+INCH	bsr	GETCH
+	bsr	TPR
+	cmpa	#$0D
+	beq	NOECHO
 
 * OUTPUT ONE CHAR in Accumulator A
 *
 
-OUTCH  PSHB           SAVE B-REG
-OUTC1  LDAB  TRCSR1
-       ANDB  #TDRE
-       BEQ    OUTC1    XMIT NOT READY
+OUTCH	pshb           SAVE B-REG
+OUTC1	ldab	TRCSR1
+	andb	#TDRE
+	beq	OUTC1    XMIT NOT READY
 
-       STAA  TDR   OUTPUT CHARACTER
-       PULB
-NOECHO RTS
+	staa	TDR   OUTPUT CHARACTER
+	pulb
+NOECHO	rts
 
 * Output a char string
 * address of string in X
 
-PRSTRN LDAA ,X  Get a char
-       BEQ PRDONE
-       BSR OUTCH
-       INX
-       BRA PRSTRN
-PRDONE RTS
+PRSTRN	ldaa	,X  Get a char
+	beq	PRDONE
+	bsr	OUTCH
+	inx
+	bra	PRSTRN
+PRDONE	rts
 
 * Report vector problem
 
-VECERR LDX	#ERROUT
-       JSR PRSTRN
-FREEZE BRA FREEZE     Suspend via endless loop
+VECERR	ldx	#ERROUT
+	jsr	PRSTRN
+FREEZE	bra	FREEZE     Suspend via endless loop
 
 * boot time memory test
 
 MEMTST	ldx	#ramst
-		stx	memtop
+	stx	memtop
 
-loop		ldaa	0,x	get byte
-		tab		save it
-		coma
-		staa	0,x	save complement same place
-		cmpa	0,x
-		bne	done	read not same as written
-		stab	0,x	restore byte
+loop	ldaa	0,x	get byte
+	tab		save it
+	coma
+	staa	0,x	save complement same place
+	cmpa	0,x
+	bne	done	read not same as written
+	stab	0,x	restore byte
 
-		inx		look at next byte
-		cpx	#ramend
-		beq	done
-		bra	loop
+	inx		look at next byte
+	cpx	#ramend
+	beq	done
+	bra	loop
 
-done		stx	memtop
-
-		rts
-
-
+done	stx	memtop
+	rts
 *
 * end utility routines
 
@@ -155,278 +194,284 @@ done		stx	memtop
 * INPUT HEX CHAR
 *
 
-INHEX  BSR    INCH
-       CMPA  #'0
-       BMI    C1       NOT HEX
-       CMPA  #'9
-       BLE    IN1HG    IS HEX
-       CMPA  #'A
-       BMI    C1       NOT HEX
-       CMPA  #'F
-       BGT    C1       NOT HEX
-       SUBA  #'A-'9-1    MAKE VALUES CONTIGUOUS
-IN1HG  RTS
+INHEX	bsr	INCH
+	cmpa	#'0
+	bmi	C1       NOT HEX
+	cmpa	#'9
+	ble	IN1HG    IS HEX
+	cmpa	#'A
+	bmi	C1       NOT HEX
+	cmpa	#'F
+	bgt	C1       NOT HEX
+	suba	#'A-'9-1    MAKE VALUES CONTIGUOUS
+IN1HG	rts
 
 * S-record loader
 *
 
-LOAD  BSR    INCH
-       CMPA  #'S
-       BNE    LOAD    1ST CHAR NOT (S)
-       BSR    INCH
-       CMPA  #'9
-       BEQ    C1
-       CMPA  #'1
-       BNE    LOAD    2ND CHAR NOT (1)
-       CLR    CKSM     ZERO CHECKSUM
-       BSR    BYTE     READ BYTE
-       SUBA  #2
-       STAA  BYTECT   BYTE COUNT
+LOAD	bsr	INCH
+	cmpa	#'S
+	bne	LOAD    1ST CHAR NOT (S)
+	bsr	INCH
+	cmpa	#'9
+	beq	C1
+	cmpa	#'1
+	bne	LOAD    2ND CHAR NOT (1)
+	clr	CKSM     ZERO CHECKSUM
+	bsr	BYTE     READ BYTE
+	suba	#2
+	staa	BYTECT   BYTE COUNT
 
 * BUILD ADDRESS
-       BSR    BADDR
+	bsr	BADDR
 
 * STORE DATA
-LOAD11 BSR    BYTE
-       DEC    BYTECT
-       BEQ    LOAD15   ZERO BYTE COUNT
-       STAA ,X        STORE DATA
-       INX
-       BRA    LOAD11
+LOAD11	bsr	BYTE
+	dec	BYTECT
+	beq	LOAD15   ZERO BYTE COUNT
+	staa	,X        STORE DATA
+	inx
+	bra	LOAD11
 
-LOAD15 INC    CKSM
-       BEQ    LOAD
-LOAD19 LDAA  #'?      PRINT QUESTION MARK
+LOAD15	inc	CKSM
+	beq	LOAD
+LOAD19	ldaa	#'?      PRINT QUESTION MARK
 
-       JSR    OUTCH
-C1     JMP    CONTRL
+	jsr	OUTCH
+C1	jmp	CONTRL
 
 * BUILD ADDRESS
 *
 
-BADDR  BSR    BYTE     READ 2 FRAMES
-       STAA XHI
-       BSR    BYTE
-       STAA XLOW
-       LDX    XHI      (X) ADDRESS WE BUILT
-       RTS
+BADDR	bsr	BYTE     READ 2 FRAMES
+	staa	XHI
+	bsr	BYTE
+	staa	XLOW
+	ldx	XHI      (X) ADDRESS WE BUILT
+	rts
 
 * INPUT BYTE (TWO FRAMES)
 *
 
-BYTE   BSR    INHEX    GET HEX CHAR
-       ASLA
-       ASLA
-       ASLA
-       ASLA
-       TAB
-       BSR    INHEX
-       ANDA  #$0F     MASK TO 4 BITS
-       ABA
-       TAB
-       ADDB  CKSM
-       STAB  CKSM
-       RTS
+BYTE	bsr	INHEX    GET HEX CHAR
+	asla
+	asla
+	asla
+	asla
+	tab
+	bsr	INHEX
+	anda	#$0F     MASK TO 4 BITS
+	aba
+	tab
+	addb	CKSM
+	stab	CKSM
+	rts
 
 * CHANGE MEMORY (M AAAA DD NN)
 *
 
-CHANGE BSR    BADDR    BUILD ADDRESS
-       BSR    OUTS     PRINT SPACE
-       BSR    OUT2HS
-       BSR    BYTE
-       DEX
-       STAA ,X
-       CMPA ,X
-       BNE    LOAD19   MEMORY DID NOT CHANGE
-       BRA    CONTRL
+CHANGE	bsr	BADDR    BUILD ADDRESS
+	bsr	OUTS     PRINT SPACE
+	bsr	OUT2HS
+	bsr	BYTE
+	dex
+	staa	,X
+	cmpa	,X
+	bne	LOAD19   MEMORY DID NOT CHANGE
+	bra	CONTRL
 
 * WRITE MEMORY (M AAAA NN)
 *
 
-MWRITE BSR    BADDR    BUILD ADDRESS
-       BSR    OUTS     PRINT SPACE
-       BSR    BYTE
-       STAA ,X
-       BRA    CONTRL
+MWRITE	bsr	BADDR    BUILD ADDRESS
+	bsr	OUTS     PRINT SPACE
+	bsr	BYTE
+	staa	,X
+	bra	CONTRL
 
 *  formatted output entry points
 *
 
-OUTHL  LSRA           OUT HEX LEFT BCD DIGIT
-       LSRA
-       LSRA
-       LSRA
+OUTHL	lsra	OUT HEX LEFT BCD DIGIT
+	lsra
+	lsra
+	lsra
 
-OUTHR  ANDA  #$F      OUT HEX RIGHT BCD DIGIT
-       ADDA  #$30
-       CMPA  #$39
-       BHI   ISALF
-       JMP    OUTCH
+OUTHR	anda	#$F	OUT HEX RIGHT BCD DIGIT
+	adda	#$30
+	cmpa	#$39
+	bhi	ISALF
+	jmp	OUTCH
 
-ISALF  ADDA  #$7
-       JMP    OUTCH
+ISALF	adda	#$7
+	jmp	OUTCH
 
-OUT2H  LDAA  0,X      OUTPUT 2 HEX CHAR
-       BSR    OUTHL    OUT LEFT HEX CHAR
-       LDAA  0,X
-       BSR    OUTHR    OUT RIGHT HEX VHAR
-       INX
-       RTS
+OUT2H	ldaa	0,X      OUTPUT 2 HEX CHAR
+	bsr	OUTHL    OUT LEFT HEX CHAR
+	ldaa	0,X
+	bsr	OUTHR    OUT RIGHT HEX VHAR
+	inx
+	rts
 
-OUT2HS BSR    OUT2H    OUTPUT 2 HEX CHAR + SPACE
-OUTS   LDAA  #$20     SPACE
-       JMP    OUTCH    (BSR & RTS)
+OUT2HS	bsr	OUT2H    OUTPUT 2 HEX CHAR + SPACE
+OUTS	ldaa	#$20     SPACE
+	jmp	OUTCH    (bsr & rts)
 
 * Monitor startup
 *
 
-KBUG		jsr	MEMTST	check memory
+KBUG	jsr	MEMTST	check memory
 
-		LDX   #MOTD		Print start up message
-		JSR   PRSTRN
+	ldx	#MOTD		Print start up message
+	jsr	PRSTRN
 
-		ldx	#MMSG1	Print memtest results
-		jsr	PRSTRN
-		ldx	#memtop
-		jsr	OUT2H
-		jsr	OUT2H		
-		ldx	#MMSG2
-		jsr	PRSTRN
+	ldx	#MMSG1	Print memtest results
+	jsr	PRSTRN
+	ldx	#memtop
+	jsr	OUT2H
+	jsr	OUT2H
+	ldx	#MMSG2
+	jsr	PRSTRN
 
-		LDX   #cmdhlp   Print commands message
-		JSR   PRSTRN
+	ldx	#cmdhlp   Print commands message
+	jsr	PRSTRN
 
-		BRA   CONTRL
+	bra	CONTRL
 
      
 * PRINT CONTENTS OF STACK
-PRINT  LDX   #REGHDR   Print register titles
-       JSR   PRSTRN
-       TSX
-       STX    SP       SAVE STACK POINTER
-       LDAB  #9
-PRINT2 BSR    OUT2HS   OUT 2 HEX & SPCACE
-       DECB
-       BNE    PRINT2
 
-CONTRL LDS    #STACK   SET STACK POINTER
-       LDAA  #$D      CARRIAGE RETURN
-       JSR    OUTCH
-       LDAA  #$A      LINE FEED
-       JSR    OUTCH
-       LDX   #PROMPT   Print start up message
-       JSR   PRSTRN
+PRINT	ldx	#REGHDR   Print register titles
+	jsr	PRSTRN
+	tsx
+	stx	SP       SAVE STACK POINTER
+	ldab	#9
+PRINT2	bsr	OUT2HS   OUT 2 HEX & SPCACE
+	DECB
+	bne	PRINT2
 
-       JSR    INCH     READ CHARACTER
-       TAB
-       JSR    OUTS     PRINT SPACE
+CONTRL	LDS	#STACK   SET STACK POINTER
+	ldaa	#$D      CARRIAGE RETURN
+	jsr	OUTCH
+	ldaa	#$A      LINE FEED
+	jsr	OUTCH
+	ldx	#PROMPT   Print start up message
+	jsr	PRSTRN
 
-       CMPB  #'X		Execute stored program
-       BNE    NOTQ
-       JSR    XCALL
-       JMP    KBUG
+	jsr	INCH     READ CHARACTER
+	tab
+	jsr	OUTS     PRINT SPACE
 
-NOTQ   CMPB  #'L		Load S-record
-       BNE    NOTL
-       JMP    LOAD
+	cmpb	#'X		Execute stored program
+	bne	NOTQ
+	jsr	XCALL
+	jmp	KBUG
 
-NOTL   CMPB  #'M		Modify
-       BNE    NOTM
-       JMP    CHANGE
+NOTQ	cmpb	#'L		Load S-record
+	bne	NOTL
+	jmp	LOAD
 
-NOTM   CMPB  #'W		Write
-		BNE NOTW
-       JMP    MWRITE
+NOTL	cmpb	#'M		Modify
+	bne	NOTM
+	jmp	CHANGE
 
-NOTW   CMPB  #'P		Print
-       BEQ    PRINT
-       CMPB  #'G		Go
-       BNE    CONTRL
-       RTI             GO
+NOTM	cmpb	#'W		Write
+	bne	NOTW
+	jmp	MWRITE
+
+NOTW	cmpb	#'P		Print
+	beq	PRINT
+	cmpb	#'G		Go
+	bne	CONTRL
+	rti			Load registers and run
 
 * Constant data section
 
-MOTD		FCB $0D,$0A
-		FCC "*** Kbug 1.00 for HD6303Y EVB 1.0 ***"
-		FCB $0D,$0A,0
+MOTD	FCB $0D,$0A
+	FCC "*** Kbug 1.03 for HD6303Y EVB 1.0 ***"
+	FCB $0D,$0A,0
 
 cmdhlp	FCC "G(o),L(oad),P(roc),M(od),W(rite),X(ecute)?:"
        	FCB $0D,$0A,0
 
-PROMPT FCC "KBUG->"
-       FCB 0
+PROMPT	FCC "KBUG->"
+	FCB 0
 
-REGHDR FCB $0D,$0A
-       FCC "CC B  A  XH XL PH PL SH SL"
-       FCB $0D,$0A,0
+REGHDR	FCB $0D,$0A
+	FCC "CC B  A  XH XL PH PL SH SL"
+	FCB $0D,$0A,0
 
-ERROUT FCB $0D,$0A
-       FCC "Err - vector table entry no init"
-       FCB $0D,$0A,0
+ERROUT	FCB $0D,$0A
+	FCC "Err - vector table entry no init"
+	FCB $0D,$0A,0
 
-MMSG1		FCC "RAM test passed to "
-		FCB 0
+MMSG1	FCC "RAM test passed to "
+	FCB 0
 
-MMSG2		FCC "."
-		FCB $0D,$0A,0
+MMSG2	FCC "."
+	FCB $0D,$0A,0
 
 * Processor hardware vectors
 * There are ten, not including CPU Reset
 
-       ORG    $FFEA
+	ORG	$FFEA
 
-IRQ2   FDB    VIRQ2
-CMI    FDB    VCMI
-TRAP   FDB    VTRAP
-SIO    FDB    VSIO
-TOI    FDB    VTOI
-OCI    FDB    VOCI
-ICI    FDB    VICI
-IRQ1   FDB    VIRQ1
-SWI    FDB    VSWI
-NMI    FDB    VNMI
-RES    FDB    START
+IRQ2	FDB	VIRQ2
+CMI	FDB	VCMI
+TRAP	FDB	VTRAP
+SIO	FDB	VSIO
+TOI	FDB	VTOI
+OCI	FDB	VOCI
+ICI	FDB	VICI
+IRQ1	FDB	VIRQ1
+SWI	FDB	VSWI
+NMI	FDB	VNMI
+RES	FDB	START
 
 * Data Section
 * located in internal RAM
 
-		org	INTRAM
+	org	INTRAM
 
 memtop	rmb	2
 
-       ORG    EXTRAM-44
+	ORG	EXTRAM-44
 
-STACK  RMB    1        STACK POINTER
-* REGISTERS FOR GO
-       RMB    1        CONDITION CODES
-       RMB    1        B ACCUMULATOR
-       RMB    1        A
-       RMB    1        X-HIGH
-       RMB    1        X-LOW
-       RMB    1        P-HIGH
-       RMB    1        P-LOW
-SP     RMB    1        S-HIGH
-       RMB    1        S-LOW
-* END REGISTERS FOR GO
-CKSM   RMB    1        CHECKSUM
-BYTECT RMB    1        BYTE COUNT
-XHI    RMB    1        XREG HIGH
-XLOW   RMB    1        XREG LOW
+STACK	RMB	1        STACK POINTER
+
+* REGISTERS FOR GO command
+
+	RMB	1        CONDITION CODES
+	RMB	1        B ACCUMULATOR
+	RMB	1        A
+	RMB	1        X-HIGH
+	RMB	1        X-LOW
+	RMB	1        P-HIGH
+	RMB	1        P-LOW
+SP	RMB	1        S-HIGH
+	RMB	1        S-LOW
+
+* END REGISTERS FOR GO command
+
+CKSM	RMB	1        CHECKSUM
+BYTECT	RMB	1        BYTE COUNT
+XHI	RMB	1        XREG HIGH
+XLOW	RMB	1        XREG LOW
 
 * CPU vector jump table
+* must be in RAM to be alterable
 
-VIRQ2   RMB	 3
-VCMI    RMB	 3
-VTRAP   RMB	 3
-VSIO    RMB	 3
-VTOI    RMB	 3
-VOCI    RMB	 3
-VICI    RMB	 3
-VIRQ1   RMB	 3
-VSWI    RMB	 3
-VNMI    RMB	 3
+VIRQ2	RMB	3
+VCMI	RMB	3
+VTRAP   RMB	3
+VSIO    RMB	3
+VTOI    RMB	3
+VOCI    RMB	3
+VICI    RMB	3
+VIRQ1   RMB	3
+VSWI    RMB	3
+VNMI    RMB	3
 
-HERE EQU *
+HERE	equ	*
 
        END
