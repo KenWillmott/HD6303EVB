@@ -1,5 +1,5 @@
 # HD6303EVB
-Hitachi HD63C03YP Evaluation Board
+* Hitachi HD63C03YP Evaluation Board
 
 The HD63C03YP is a Hitachi MCU that combines a Motorola MC6803 code compatible processor, with on chip peripherals such as UART, parallel I/O, and hardware timers and counters. The MC6803 is code compatible with the MC6801, so development tools such as an assembler can be used to produce code for it. Also, existing softare written for the MC6801/6803 should run on it, with few or no modifications.
 
